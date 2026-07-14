@@ -26,5 +26,6 @@ ENV/
 
 # AI local context & built APKs (usually not tracked in Git)
 PROJECT_CONTEXT.md
+FINAL_PROJECT_REPORT.md
 # Smart_Helmet.apk
 # app-debug.apk

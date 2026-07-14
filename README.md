@@ -12,13 +12,13 @@ The system consists of two primary modules:
 
 ```mermaid
 graph TD
-    subgraph Smart Helmet (Hardware)
+    subgraph "Smart Helmet (Hardware)"
         Camera[USB Camera] -->|MJPEG Frame Stream| Server[Python Flask Server]
         IMU[MPU6050 Accel/Gyro] -->|I2C Telemetry| Server
         BMP[BMP280 Barometer] -->|I2C Altitude| Server
     end
 
-    subgraph Mobile Device (Android App)
+    subgraph "Mobile Device (Android App)"
         App[Smart Helmet App] -->|HTTP Request| Server
         Server -->|MJPEG Video Stream| App
         Server -->|JSON Telemetry| App

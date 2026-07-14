@@ -1,0 +1,30 @@
+# Android build & cache
+.gradle/
+**/build/
+**/local.properties
+.idea/
+*.iml
+*.ap_
+*.dex
+/android_app/.gradle/
+/android_app/.idea/
+/android_app/local.properties
+
+# C++ build caches
+**/.cxx/
+
+# Python cache & virtual environment
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+ENV/
+*.swp
+
+# AI local context & built APKs (usually not tracked in Git)
+PROJECT_CONTEXT.md
+# Smart_Helmet.apk
+# app-debug.apk

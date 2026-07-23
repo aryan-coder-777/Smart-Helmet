@@ -64,7 +64,47 @@ import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+/**
+ * =====================================================================================
+ * SMART HELMET COMMAND CENTER — MAIN ACTIVITY
+ * =====================================================================================
+ * Package: com.smarthelmet.app
+ * Architecture: Android Single-Activity Model (View-based Tab Navigation)
+ * Threading: ExecutorService (4 Background Threads) + Handler (Main UI Thread)
+ * 
+ * CORE RESPONSIBILITIES & SUBSYSTEMS:
+ * 1. Network & UDP Auto-Discovery:
+ *    - Connects to Raspberry Pi Flask Server on Port 5000 via local Wi-Fi.
+ *    - UDP Broadcast on Port 5005 auto-discovers helmet IP without manual input.
+ * 
+ * 2. Real-Time Telemetry & Posture Engine:
+ *    - Polls GET /posture @ 1 Hz to display Pitch, Roll, Yaw, Altitude, and Fall status.
+ *    - 3D Canvas Visualizer (Helmet3DView) renders real-time head orientation.
+ *    - Listens for Hands-Free Head Commands (START_PPE, START_LOCATION, STOP_ALL).
+ * 
+ * 3. Emergency SOS Subsystem:
+ *    - Triggers on Fall Detection FSM state "FALL DETECTED" or manual SOS button.
+ *    - Displays 15-second cancellable countdown dialog with TTS audio alerts.
+ *    - Parallel GPS acquisition (GPS_PROVIDER + NETWORK_PROVIDER).
+ *    - Dual SMS Dispatch: Direct silent SMS (primary) or System Messages app (fallback).
+ * 
+ * 4. Two-Stage PPE Safety Inspection Pipeline:
+ *    - Stage 1: Google ML Kit Face & Object Gating (detects worker stability ≥ 800ms).
+ *    - Stage 2: YOLOv8 TFLite Model (best_calibrated_model.tflite, 640x640, 4 CPU threads).
+ *    - Applies HuggingFace→App class index remapping, per-class confidence thresholds,
+ *      and anatomical filtering rules (Head Crop vest filter, Vest torso Y-coord filter).
+ *    - 15-Second Accumulation Window: TTS compliance results & report PDF/file log export.
+ * 
+ * 5. Live Location OCR Scanner (PaddleOCR):
+ *    - PaddleLite C++ JNI bridge (DB text detection + CRNN BiLSTM recognition).
+ *    - Runs every 700 ms. Multi-frame temporal consensus (3 matching reads in 3s).
+ *    - Per-code 60-second cooldown timer prevents duplicate location SMS dispatches.
+ * =====================================================================================
+ */
 public class MainActivity extends Activity {
+        // ─────────────────────────────────────────────────────────────────────────────
+    // CONSTANTS & CONFIGURATION PARAMETERS
+    // ─────────────────────────────────────────────────────────────────────────────
     private static final String PREFS = "smart_helmet_prefs";
     private static final String DEFAULT_HOST = "10.245.158.252:5000";
     private static final UUID SPP_UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB");
@@ -87,6 +127,9 @@ public class MainActivity extends Activity {
     private HttpURLConnection ppeStreamConn = null;
 
     // --- TENSORFLOW LITE FOR TWO-STAGE PPE DETECTION ---
+        // ─────────────────────────────────────────────────────────────────────────────
+    // TENSORFLOW LITE & GOOGLE ML KIT (TWO-STAGE PPE DETECTION SUBSYSTEM)
+    // ─────────────────────────────────────────────────────────────────────────────
     private Interpreter tflite;         // Stage 2 model (best_calibrated_model.tflite)
     private com.google.mlkit.vision.objects.ObjectDetector mlKitDetector; // Stage 1 ML Kit Object Detector
     private com.google.mlkit.vision.face.FaceDetector mlKitFaceDetector; // Stage 1 person presence detector
@@ -97,6 +140,9 @@ public class MainActivity extends Activity {
     };
 
     // Alert Status flags for two-stage geometric logic
+        // ─────────────────────────────────────────────────────────────────────────────
+    // PPE SAFETY WARNING & HUD ALERT STATE FLAGS
+    // ─────────────────────────────────────────────────────────────────────────────
     private volatile boolean isPersonInFrame = false;
     private volatile boolean alertNoHelmet = false;
     private volatile boolean alertNoGoggles = false;
@@ -164,6 +210,9 @@ public class MainActivity extends Activity {
     private Button liveScanButton;
     private boolean liveScanOn = false;
     private volatile boolean liveReaderRunning = false;
+        // ─────────────────────────────────────────────────────────────────────────────
+    // LIVE LOCATION PADDLEOCR STATE VARIABLES
+    // ─────────────────────────────────────────────────────────────────────────────
     private volatile boolean liveOcrProcessing = false;
     private volatile int liveStreamGen = 0;
     private HttpURLConnection liveStreamConn = null;
@@ -249,6 +298,12 @@ public class MainActivity extends Activity {
         }
     };
 
+    @Override
+        /**
+     * Activity Lifecycle — onCreate
+     * Initializes UI layout, SharedPreferences, TextToSpeech engine, permissions check,
+     * and auto-connects to helmet server via UDP discovery.
+     */
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -2908,6 +2963,11 @@ public class MainActivity extends Activity {
         }
     }
 
+        /**
+     * OCR ENGINE — PaddleOCR Zone Code Location Recognition
+     * Runs PaddleLite C++ runtime (DB text detection + CRNN BiLSTM recognition) on camera bitmap.
+     * Evaluates multi-frame temporal consensus (3 matching reads in 3s) and applies 60s per-code cooldown.
+     */
     private void runLiveLocationOcr(Bitmap bitmap) {
         java.util.List<String> recognizedTexts = runPaddleOcr(bitmap);
         if (recognizedTexts.isEmpty()) {
@@ -4411,6 +4471,14 @@ public class MainActivity extends Activity {
         return mutable;
     }
 
+        /**
+     * CORE AI ENGINE — Two-Stage PPE Compliance Inference
+     * Stage 1: Google ML Kit Face + Object Gating (derives Head & Body ROIs, filters non-human frames).
+     * Stage 2: YOLOv8 TFLite 640x640 model run on each ROI crop (4 CPU threads).
+     * Post-processing: Remaps HuggingFace class order → App class order, applies per-class
+     * confidence thresholds, and enforces anatomical rules (Head Crop vest filter, Vest torso Y-filter).
+     * Accumulation: 15-second compliance window tracks detections → triggers TTS & report export.
+     */
     private void runInferenceOnBitmap(Bitmap bitmap) {
         if (!isModelLoaded || bitmap == null) return;
         try {

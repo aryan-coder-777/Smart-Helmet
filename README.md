@@ -439,14 +439,20 @@ The helmet classifies head pose into **6 static orientation states**:
 
 ![Posture States Diagram](docs/images/posture_states.jpg)
 
-| State | Condition | Angle Threshold |
+| State | Category | Detection Condition & Threshold |
 |---|---|---|
-| **LEVEL** | Default neutral orientation | None of below match |
-| **LOOKING UP** | Head tilted backward | pitch > **+30°** |
-| **LOOKING DOWN** | Head tilted forward | pitch < **−30°** |
-| **LEFT TILT** | Head rolling left | roll > **+30°** |
-| **RIGHT TILT** | Head rolling right | roll < **−30°** |
-| **UPSIDE-DOWN** | Helmet inverted | az < 0 (gravity reversed) |
+| **LEVEL** | Pitch/Roll Pose | Neutral position (pitch ~ 0°, 
+oll ~ 0°) |
+| **LOOKING UP** | Pitch Pose | Head tilted backward (pitch > **+30°**) |
+| **LOOKING DOWN** | Pitch Pose | Head tilted forward (pitch < **−30°**) |
+| **LEFT TILT** | Roll Pose | Head rolling left (
+oll > **+30°**) |
+| **RIGHT TILT** | Roll Pose | Head rolling right (
+oll < **−30°**) |
+| **UPSIDE-DOWN** | Critical Inversion | Helmet inverted (z < 0, gravity reversed) |
+| **LOOKING LEFT** | Yaw Turn | Head turned left (yaw_angle > **+25°**, Gyro-Z) |
+| **LOOKING RIGHT** | Yaw Turn | Head turned right (yaw_angle < **−25°**, Gyro-Z) |
+| **FORWARD** | Yaw Turn | Head facing forward (yaw_angle in [−25°, +25°]) |
 
 ---
 

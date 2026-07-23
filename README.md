@@ -17,7 +17,6 @@
   - [Video Recording Pipeline](#video-recording-pipeline)
   - [Fall Detection Finite State Machine](#fall-detection-finite-state-machine)
   - [Barometric Altitude (BMP280)](#barometric-altitude-bmp280)
-  - [Magnetometer (AK8963)](#magnetometer-ak8963)
 - [Android Application (Java)](#-android-application-java)
   - [Two-Stage PPE Detection Pipeline](#two-stage-ppe-detection-pipeline)
   - [YOLOv8 Model Training](#yolov8-model-training)
@@ -40,8 +39,8 @@
 │  Sony IMX708 (12MP)  ─ MJPEG ──▶ │  /video     → Live camera stream
 │  MPU6050 (IMU)  ─── I2C 0x68 ──▶ │  /posture   → Orientation, fall, gestures
 │  BMP280 (Baro)  ─── I2C 0x76 ──▶ │  /imu       → Raw sensor data
-│  AK8963 (Mag)   ─── I2C 0x0C ──▶ │  /media/*   → Files: MP4, JPEG, CSV
-│                                  │  /status    → System health
+│                                  │  /media/*   → Files: MP4, JPEG, CSV
+│  GY-91 Module (MPU6050+BMP280)   │  /status    → System health
 │  Python 3 + Flask  port 5000     │
 │  UDP Discovery      port 5005    │ ─────────────────────────────▶  Auto-discovers IP
 └──────────────────────────────────┘
@@ -57,9 +56,9 @@ The Android application connects to the helmet over local Wi-Fi. It continuously
 |---|---|---|
 | Main Compute | Raspberry Pi Zero 2 W (quad-core ARM Cortex-A53, 512 MB RAM) | — |
 | Camera | Sony IMX708, 12 MP, Camera Module 3 | MIPI CSI-2 |
+| Multi-Sensor Module | GY-91 Breakout Board | I2C |
 | 6-DOF IMU | MPU6050 (3-axis accelerometer + 3-axis gyroscope) | I2C @ 0x68 |
 | Barometer | BMP280 (pressure + temperature sensor) | I2C @ 0x76 |
-| Magnetometer | AK8963 (3-axis magnetometer) | I2C @ 0x0C via MPU bypass |
 | Android Host | Any Android 8.0+ (API level 26+) smartphone | Wi-Fi |
 
 ---
@@ -155,17 +154,16 @@ sudo systemctl start smarthelmet
 
 > **Source File:** [`helmet_server/helmet_server.py`](helmet_server/helmet_server.py)
 
-The helmet server is implemented in Python 3 using Flask. It runs background threads for IMU polling (20 Hz), camera streaming, video recording encoding, and REST endpoints.
+The helmet server is implemented in Python 3 using Flask. It runs background threads for GY-91 sensor reading (MPU6050 IMU + BMP280 barometer at 20 Hz), camera streaming, video recording encoding, and REST endpoints.
 
 ### Key Thresholds & Configuration Block
 
 ```python
 # ─────────────────────────────────────────────────────────────────────────────
-# SENSOR I2C ADDRESSES
+# GY-91 SENSOR I2C ADDRESSES
 # ─────────────────────────────────────────────────────────────────────────────
 IMU_ADDR = 0x68          # MPU6050 Accelerometer + Gyroscope
 BMP_ADDR = 0x76          # BMP280 Barometric Pressure + Temperature
-MAG_ADDR = 0x0C          # AK8963 Magnetometer (accessed via MPU bypass)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FALL DETECTION THRESHOLDS (Raw ADC counts at ±2g, 16,384 LSB/g)
@@ -331,7 +329,7 @@ The camera engine manages an on-demand background worker (`camera_worker`) that 
 
 ```python
 # ─────────────────────────────────────────────────────────────────────────────
-# BAROMETRIC ALTITUDE BLOCK
+# BAROMETRIC ALTITUDE BLOCK (BMP280)
 # ─────────────────────────────────────────────────────────────────────────────
 # Address: 0x76 | Chip ID: 0x58
 # Pressure formula:
@@ -339,20 +337,6 @@ The camera engine manages an on-demand background worker (`camera_worker`) that 
 #
 # Baseline elevation (_alt_baseline) captured on first reading.
 # Relative height change reported as: altitude_delta_m = current - baseline
-# ─────────────────────────────────────────────────────────────────────────────
-```
-
----
-
-### Magnetometer (AK8963)
-
-```python
-# ─────────────────────────────────────────────────────────────────────────────
-# AK8963 MAGNETOMETER BLOCK
-# ─────────────────────────────────────────────────────────────────────────────
-# Address: 0x0C (accessed via MPU6050 I2C bypass mode: register 0x37 = 0x02)
-# Config: 16-bit resolution, continuous mode 2 (100 Hz)
-# Scale: raw_counts * 0.15 → microtesla (µT)
 # ─────────────────────────────────────────────────────────────────────────────
 ```
 
@@ -502,7 +486,7 @@ All endpoints operate on port 5000:
 |---|---|---|
 | `/` | GET | Serves local web dashboard |
 | `/status` | GET | Camera, IMU, and recording state JSON |
-| `/imu` | GET | Raw sensor data (accel, gyro, mag, temp) |
+| `/imu` | GET | Raw sensor data (accel, gyro, temp) |
 | `/posture` | GET | Posture state, orientation, gestures, fall FSM, head commands |
 | `/video` | GET | Live MJPEG stream (`multipart/x-mixed-replace`) |
 | `/video/ppe` | GET | Duplicate stream endpoint for PPE tab |

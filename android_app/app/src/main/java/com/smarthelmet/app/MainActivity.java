@@ -38,6 +38,7 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.GridLayout;
+import android.widget.RelativeLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -76,7 +77,7 @@ public class MainActivity extends Activity {
     private static final int LIVE_OCR_FRAME_INTERVAL_MS = 700;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private final ExecutorService executor = Executors.newFixedThreadPool(4);
     // Camera tab stream — display only, no AI, full FPS
     private volatile int streamGeneration = 0;
     // PPE tab stream — fully independent thread with 2-stage AI inference
@@ -128,7 +129,7 @@ public class MainActivity extends Activity {
     private TextView gyroY;
     private TextView gyroZ;
     private TextView altitudeText;
-    private TextView temp;
+
     // Posture tab views
     private TextView postureOrientation;
     private TextView postureFallState;
@@ -186,6 +187,8 @@ public class MainActivity extends Activity {
     private boolean scanDetectedMask = false;
     private boolean scanDetectedGoggles = false;
     private final float[] scanBestConfidence = new float[6];
+    private final int[] scanHitCount = new int[6];
+    private final long[] scanFirstHitTime = new long[6];
     private int scanAnnouncementCount = 0;
     private int ppePersonReportCounter = 0;
     private volatile boolean isModelProcessing = false;
@@ -212,7 +215,7 @@ public class MainActivity extends Activity {
     private final Runnable imuPoller = new Runnable() {
         @Override
         public void run() {
-            if (!polling) return;
+            if (!polling || !"sensors".equals(activeTab)) return;
             requestJson("/imu", new JsonCallback() {
                 @Override
                 public void onSuccess(JSONObject json) {
@@ -231,12 +234,12 @@ public class MainActivity extends Activity {
     private final Runnable posturePoller = new Runnable() {
         @Override
         public void run() {
-            if (!polling) return;
+            if (!polling || !"posture".equals(activeTab)) return;
             requestJson("/posture", new JsonCallback() {
                 @Override
                 public void onSuccess(JSONObject json) {
                     updatePosture(json);
-                    handler.postDelayed(posturePoller, 800);
+                    handler.postDelayed(posturePoller, 150);
                 }
                 @Override
                 public void onError(String message) {
@@ -286,6 +289,7 @@ public class MainActivity extends Activity {
         streamOn = false;
         stopMjpegReader();
         handler.removeCallbacks(imuPoller);
+        handler.removeCallbacks(backgroundGesturePoller);
         closeBluetooth();
         executor.shutdownNow();
         // Stop both independent streams
@@ -466,6 +470,7 @@ public class MainActivity extends Activity {
             buildSensors(page);
         } else if ("posture".equals(tab)) {
             buildPosture(page);
+            polling = true; // Auto-enable polling when entering posture tab
             handler.removeCallbacks(posturePoller);
             handler.post(posturePoller);
         } else if ("live".equals(tab)) {
@@ -753,7 +758,6 @@ public class MainActivity extends Activity {
         gyroZ = addMetric(sensorGrid, "Gyro Z", "-- deg/s", "#0F766E");
 
         altitudeText = addMetric(sensorGrid, "Altitude", "-- m", "#2563EB");
-        temp = addMetric(sensorGrid, "Temperature", "-- C", "#D04F3B");
 
         // Calibration Panel
         LinearLayout calibPanel = panel();
@@ -1075,15 +1079,41 @@ public class MainActivity extends Activity {
                 java.util.ArrayList<String> parts = sms.divideMessage(message);
                 sms.sendMultipartTextMessage(emergencyNumber, null, parts, null, null);
                 runOnUiThread(new Runnable() { @Override public void run() {
-                    Toast.makeText(MainActivity.this, "\ud83d\udea8 SOS sent to " + emergencyNumber, Toast.LENGTH_LONG).show();
+                    Toast.makeText(MainActivity.this, "🚨 SOS sent to " + emergencyNumber, Toast.LENGTH_LONG).show();
                 }});
             } else {
-                runOnUiThread(new Runnable() { @Override public void run() {
-                    Toast.makeText(MainActivity.this, "SMS permission denied. Grant it in Settings.", Toast.LENGTH_LONG).show();
-                }});
+                // Fallback: Open system Messages app pre-filled with SOS text
+                final String finalMsg = message;
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_SENDTO);
+                            intent.setData(android.net.Uri.parse("smsto:" + android.net.Uri.encode(emergencyNumber)));
+                            intent.putExtra("sms_body", finalMsg);
+                            startActivity(intent);
+                            Toast.makeText(MainActivity.this, "Opening SMS app to send SOS...", Toast.LENGTH_LONG).show();
+                        } catch (Exception e) {
+                            Toast.makeText(MainActivity.this, "SMS permission denied. Grant it in Phone Settings > Apps > Smart Helmet", Toast.LENGTH_LONG).show();
+                        }
+                    }
+                });
             }
         } catch (Exception e) {
             android.util.Log.e("SOS", "SMS send failed: " + e.getMessage());
+            // Fallback to Intent on SmsManager exception
+            final String finalMsg = message;
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_SENDTO);
+                        intent.setData(android.net.Uri.parse("smsto:" + android.net.Uri.encode(emergencyNumber)));
+                        intent.putExtra("sms_body", finalMsg);
+                        startActivity(intent);
+                    } catch (Exception ignored) {}
+                }
+            });
         }
     }
 
@@ -1110,9 +1140,21 @@ public class MainActivity extends Activity {
         inputParams.setMargins(0, dp(12), 0, dp(10));
         wifiPanel.addView(hostInput, inputParams);
 
+        Button autoDiscover = wideButton("Auto-Discover Helmet IP", "#10B981");
+        LinearLayout.LayoutParams autoParams = matchWrap();
+        autoParams.setMargins(0, dp(6), 0, dp(10));
+        wifiPanel.addView(autoDiscover, autoParams);
+
+        autoDiscover.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                performUdpDiscovery(true);
+            }
+        });
+
         Button wifiConnect = wideButton("Connect Wi-Fi", "#3B82F6");
         wifiPanel.addView(wifiConnect, matchWrap());
-        wifiPanel.addView(detailRow("Server", "Hidden after connection"));
+        wifiPanel.addView(detailRow("Server", "Auto-discovered or manual IP"));
 
         wifiConnect.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -2116,14 +2158,178 @@ public class MainActivity extends Activity {
                 if (showToast) {
                     Toast.makeText(MainActivity.this, "Check Pi IP and hotspot", Toast.LENGTH_SHORT).show();
                 }
+                // Silently attempt UDP auto-discovery on local Wi-Fi if current IP is unreachable
+                performUdpDiscovery(false);
             }
         });
+    }
+
+    private void performUdpDiscovery(final boolean showToast) {
+        if (showToast) {
+            Toast.makeText(this, "Scanning local network for Helmet...", Toast.LENGTH_SHORT).show();
+        }
+        executor.execute(new Runnable() {
+            @Override
+            public void run() {
+                java.net.DatagramSocket socket = null;
+                try {
+                    socket = new java.net.DatagramSocket();
+                    socket.setBroadcast(true);
+                    socket.setSoTimeout(1800);
+
+                    byte[] sendData = "SMART_HELMET_DISCOVER".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+                    // 1. Try global broadcast 255.255.255.255
+                    try {
+                        java.net.DatagramPacket packet = new java.net.DatagramPacket(
+                                sendData, sendData.length,
+                                java.net.InetAddress.getByName("255.255.255.255"), 5005
+                        );
+                        socket.send(packet);
+                    } catch (Exception ignored) {}
+
+                    // 2. Scan Mobile Hotspot ARP table (/proc/net/arp) to ping tethered client devices directly
+                    try {
+                        java.io.BufferedReader arpReader = new java.io.BufferedReader(new java.io.FileReader("/proc/net/arp"));
+                        String line;
+                        while ((line = arpReader.readLine()) != null) {
+                            String[] tokens = line.trim().split("\\s+");
+                            if (tokens.length >= 4 && !tokens[0].equals("IP") && !tokens[3].equals("00:00:00:00:00:00")) {
+                                try {
+                                    java.net.InetAddress candidate = java.net.InetAddress.getByName(tokens[0]);
+                                    java.net.DatagramPacket p = new java.net.DatagramPacket(sendData, sendData.length, candidate, 5005);
+                                    socket.send(p);
+                                } catch (Exception ignored) {}
+                            }
+                        }
+                        arpReader.close();
+                    } catch (Exception ignored) {}
+
+                    // 3. Try subnet broadcast addresses on all active network interfaces
+                    try {
+                        java.util.Enumeration<java.net.NetworkInterface> interfaces = java.net.NetworkInterface.getNetworkInterfaces();
+                        while (interfaces != null && interfaces.hasMoreElements()) {
+                            java.net.NetworkInterface ni = interfaces.nextElement();
+                            if (ni.isLoopback() || !ni.isUp()) continue;
+                            for (java.net.InterfaceAddress ia : ni.getInterfaceAddresses()) {
+                                java.net.InetAddress broadcast = ia.getBroadcast();
+                                if (broadcast != null) {
+                                    java.net.DatagramPacket p = new java.net.DatagramPacket(sendData, sendData.length, broadcast, 5005);
+                                    socket.send(p);
+                                }
+                            }
+                        }
+                    } catch (Exception ignored) {}
+
+                    byte[] recvBuf = new byte[1024];
+                    java.net.DatagramPacket recvPacket = new java.net.DatagramPacket(recvBuf, recvBuf.length);
+                    socket.receive(recvPacket);
+
+                    String resp = new String(recvPacket.getData(), 0, recvPacket.getLength(), java.nio.charset.StandardCharsets.UTF_8);
+                    if (resp.startsWith("SMART_HELMET_RESPONSE")) {
+                        final String discoveredHost = recvPacket.getAddress().getHostAddress() + ":5000";
+                        handler.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                if (hostInput != null) {
+                                    hostInput.setText(discoveredHost);
+                                }
+                                getSharedPreferences(PREFS, MODE_PRIVATE)
+                                        .edit()
+                                        .putString("host", discoveredHost)
+                                        .apply();
+                                Toast.makeText(MainActivity.this, "Auto-discovered Helmet at " + discoveredHost, Toast.LENGTH_LONG).show();
+                                checkStatus(true);
+                            }
+                        });
+                        return;
+                    }
+                } catch (java.net.SocketTimeoutException e) {
+                    if (showToast) {
+                        handler.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                Toast.makeText(MainActivity.this, "No Helmet discovered on local Wi-Fi", Toast.LENGTH_SHORT).show();
+                            }
+                        });
+                    }
+                } catch (Exception e) {
+                    if (showToast) {
+                        handler.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                Toast.makeText(MainActivity.this, "Discovery error: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+                            }
+                        });
+                    }
+                } finally {
+                    if (socket != null && !socket.isClosed()) {
+                        socket.close();
+                    }
+                }
+            }
+        });
+    }
+
+    private long lastHandledHeadCmdId = 0;
+
+    private final Runnable backgroundGesturePoller = new Runnable() {
+        @Override
+        public void run() {
+            if (!polling) return;
+            requestJson("/posture", new JsonCallback() {
+                @Override
+                public void onSuccess(JSONObject json) {
+                    long cmdId = json.optLong("head_cmd_id", 0);
+                    String headCmd = json.optString("active_head_command", "NONE");
+                    if (cmdId > 0 && cmdId > lastHandledHeadCmdId) {
+                        lastHandledHeadCmdId = cmdId;
+                        handleHeadGestureCommand(headCmd);
+                    }
+                    handler.postDelayed(backgroundGesturePoller, 350);
+                }
+                @Override
+                public void onError(String message) {
+                    handler.postDelayed(backgroundGesturePoller, 2000);
+                }
+            });
+        }
+    };
+
+    private void handleHeadGestureCommand(String cmd) {
+        if ("START_PPE".equals(cmd)) {
+            if (isTtsReady && ttsEngine != null) {
+                ttsEngine.speak("Head gesture detected. Starting P P E safety compliance audit.", 
+                                android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "GesturePpeSpeech");
+            }
+            Toast.makeText(this, "Gesture: Starting PPE Scan", Toast.LENGTH_SHORT).show();
+            loadPpeModelIfNeeded();
+            startPpeStream();
+        } else if ("START_LOCATION".equals(cmd)) {
+            if (isTtsReady && ttsEngine != null) {
+                ttsEngine.speak("Head gesture detected. Starting Live Location code scan.", 
+                                android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "GestureLocSpeech");
+            }
+            Toast.makeText(this, "Gesture: Starting Live Location", Toast.LENGTH_SHORT).show();
+            startLiveLocationScan();
+        } else if ("STOP_ALL".equals(cmd)) {
+            Toast.makeText(this, "Gesture: Model turned off", Toast.LENGTH_SHORT).show();
+            stopPpeStream();
+            stopLiveLocationScan();
+            resetPpeScanState(true);
+            if (isTtsReady && ttsEngine != null) {
+                ttsEngine.speak("Model turned off.", 
+                                android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "GestureStopSpeech");
+            }
+        }
     }
 
     private void startPolling() {
         polling = true;
         handler.removeCallbacks(imuPoller);
         handler.post(imuPoller);
+        handler.removeCallbacks(backgroundGesturePoller);
+        handler.post(backgroundGesturePoller);
     }
 
     private void updateImu(JSONObject json) {
@@ -2160,9 +2366,7 @@ public class MainActivity extends Activity {
             altitudeText.setText(format(json.optDouble("altitude_m"), " m"));
         }
 
-        if (temp != null) {
-            temp.setText(format(json.optDouble("temperature_c"), " C"));
-        }
+
     }
 
     private void resetSensorMetrics() {
@@ -2174,7 +2378,7 @@ public class MainActivity extends Activity {
         if (gyroZ != null) gyroZ.setText("-- deg/s");
 
         if (altitudeText != null) altitudeText.setText("-- m");
-        if (temp != null) temp.setText("-- C");
+
         if (cubeView != null) cubeView.updateOrientation(0, 0, 0);
     }
 
@@ -2506,12 +2710,7 @@ public class MainActivity extends Activity {
         if (cameraToggleButton != null) cameraToggleButton.setText("PPE Check On");
         if (cameraImage != null) cameraImage.setImageBitmap(null);
         if (previewPlaceholder != null) previewPlaceholder.setVisibility(View.VISIBLE);
-        setTopStatus("PPE stream off");
-
-        // Stop active voice speech and reset scanner states immediately
-        if (ttsEngine != null) {
-            try { ttsEngine.stop(); } catch (Exception ignored) {}
-        }
+        // Reset scanner states immediately
         resetPpeScanState(true);
         if (previewStatus != null) {
             previewStatus.setText(isModelLoaded ? "AI Model Ready" : "Loading model...");
@@ -2529,6 +2728,8 @@ public class MainActivity extends Activity {
         scanDetectedMask = false;
         scanDetectedGoggles = false;
         java.util.Arrays.fill(scanBestConfidence, 0f);
+        java.util.Arrays.fill(scanHitCount, 0);
+        java.util.Arrays.fill(scanFirstHitTime, 0L);
         if (clearPersonState) {
             personFirstDetectedTime = 0;
             lastPersonDetectedTime = 0;
@@ -2559,10 +2760,22 @@ public class MainActivity extends Activity {
 
     private void rememberScanDetection(int classId, float confidence) {
         if (classId < 0 || classId >= scanBestConfidence.length) return;
+        
+        // Accept valid detections starting at confidence threshold for class
+        if (confidence < getConfidenceThreshold(classId)) return;
+        
         if (confidence > scanBestConfidence[classId]) {
             scanBestConfidence[classId] = confidence;
         }
-        if (confidence >= getConfidenceThreshold(classId)) {
+        
+        long now = System.currentTimeMillis();
+        scanHitCount[classId]++;
+        if (scanFirstHitTime[classId] == 0) {
+            scanFirstHitTime[classId] = now;
+        }
+        
+        // Multi-Frame Verification: Mark present if detected at least twice or sustained for >= 800ms
+        if (scanHitCount[classId] >= 2 || (now - scanFirstHitTime[classId] >= 800)) {
             if (classId == 2) scanDetectedHelmet = true;
             if (classId == 5) scanDetectedVest = true;
             if (classId == 1) scanDetectedGloves = true;
@@ -2735,6 +2948,9 @@ public class MainActivity extends Activity {
             }
             lastSentLiveCode = normalized;
             lastSentLiveCodeMs = now;
+            if (isTtsReady && ttsEngine != null) {
+                ttsEngine.speak("Text detected and verified.", android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "OcrTextVerified");
+            }
             handler.post(new Runnable() {
                 @Override public void run() {
                     sendLiveLocationSms(mapping, mapping.optString("code", pendingLiveCode));
@@ -3010,7 +3226,8 @@ public class MainActivity extends Activity {
                             JSONObject file = files.optJSONObject(i);
                             if (file != null) {
                                 final String name = file.optString("name", "");
-                                if (name.endsWith(".jpg") || name.endsWith(".mp4") || name.endsWith(".h264")) {
+                                String nameLower = name.toLowerCase();
+                                if (nameLower.endsWith(".jpg") || nameLower.endsWith(".jpeg") || nameLower.endsWith(".mjpg") || nameLower.endsWith(".mjpeg") || nameLower.endsWith(".mp4") || nameLower.endsWith(".avi") || nameLower.endsWith(".h264") || nameLower.endsWith(".csv")) {
                                     foundMedia = true;
                                     double kb = file.optDouble("size", 0) / 1024.0;
                                     String sizeStr = String.format(Locale.US, "%.1f KB", kb);
@@ -3018,47 +3235,108 @@ public class MainActivity extends Activity {
                                         sizeStr = String.format(Locale.US, "%.1f MB", kb / 1024.0);
                                     }
 
-                                    LinearLayout row = new LinearLayout(MainActivity.this);
-                                    row.setOrientation(LinearLayout.HORIZONTAL);
-                                    LinearLayout.LayoutParams rowParams = matchWrap();
-                                    rowParams.setMargins(0, dp(8), 0, dp(8));
-                                    row.setLayoutParams(rowParams);
+                                    LinearLayout card = new LinearLayout(MainActivity.this);
+                                    card.setOrientation(LinearLayout.VERTICAL);
+                                    LinearLayout.LayoutParams cardParams = matchWrap();
+                                    cardParams.setMargins(0, dp(8), 0, dp(8));
+                                    card.setLayoutParams(cardParams);
+
+                                    // Top Line: Icon + File Name + Size
+                                    LinearLayout topRow = new LinearLayout(MainActivity.this);
+                                    topRow.setOrientation(LinearLayout.HORIZONTAL);
+                                    topRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
+
+                                    String iconPrefix = (nameLower.endsWith(".mp4") || nameLower.endsWith(".mjpg") || nameLower.endsWith(".avi")) ? "🎬 " : (nameLower.endsWith(".jpg") || nameLower.endsWith(".jpeg") ? "📷 " : "📄 ");
 
                                     TextView nameText = new TextView(MainActivity.this);
-                                    nameText.setText(name);
+                                    nameText.setText(iconPrefix + name);
                                     nameText.setTextColor(Color.parseColor("#1E293B"));
-                                    nameText.setTextSize(14);
+                                    nameText.setTextSize(13);
                                     nameText.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+                                    nameText.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+                                    nameText.setSingleLine(true);
                                     LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-                                    row.addView(nameText, nameParams);
+                                    topRow.addView(nameText, nameParams);
 
                                     TextView sizeText = new TextView(MainActivity.this);
                                     sizeText.setText(sizeStr);
                                     sizeText.setTextColor(Color.parseColor("#64748B"));
                                     sizeText.setTextSize(12);
-                                    row.addView(sizeText, wrapWrap());
+                                    topRow.addView(sizeText, wrapWrap());
+
+                                    card.addView(topRow, matchWrap());
+
+                                    // Bottom Line: Play/View, Download, Delete Buttons
+                                    LinearLayout btnRow = new LinearLayout(MainActivity.this);
+                                    btnRow.setOrientation(LinearLayout.HORIZONTAL);
+                                    btnRow.setGravity(android.view.Gravity.START);
+                                    LinearLayout.LayoutParams btnRowParams = matchWrap();
+                                    btnRowParams.setMargins(0, dp(6), 0, 0);
+                                    btnRow.setLayoutParams(btnRowParams);
+
+                                    Button viewBtn = new Button(MainActivity.this);
+                                    viewBtn.setText(nameLower.endsWith(".mp4") || nameLower.endsWith(".mjpg") || nameLower.endsWith(".avi") ? "▶ Play" : "👁 View");
+                                    viewBtn.setTextColor(Color.WHITE);
+                                    viewBtn.setTextSize(11);
+                                    viewBtn.setAllCaps(false);
+                                    viewBtn.setPadding(dp(12), 0, dp(12), 0);
+                                    viewBtn.setBackground(round("#10B981", 6, "#10B981"));
+                                    viewBtn.setMinHeight(dp(32));
+                                    viewBtn.setMinimumHeight(dp(32));
+                                    btnRow.addView(viewBtn, wrapWrap());
 
                                     Button dlBtn = new Button(MainActivity.this);
-                                    dlBtn.setText("Download");
+                                    dlBtn.setText("📥 Download");
                                     dlBtn.setTextColor(Color.WHITE);
                                     dlBtn.setTextSize(11);
                                     dlBtn.setAllCaps(false);
-                                    dlBtn.setPadding(dp(8), 0, dp(8), 0);
+                                    dlBtn.setPadding(dp(12), 0, dp(12), 0);
                                     dlBtn.setBackground(round("#3B82F6", 6, "#3B82F6"));
-                                    dlBtn.setMinHeight(0);
-                                    dlBtn.setMinimumHeight(0);
+                                    dlBtn.setMinHeight(dp(32));
+                                    dlBtn.setMinimumHeight(dp(32));
                                     LinearLayout.LayoutParams btnParams = wrapWrap();
-                                    btnParams.setMargins(dp(10), 0, 0, 0);
+                                    btnParams.setMargins(dp(8), 0, 0, 0);
                                     dlBtn.setLayoutParams(btnParams);
+                                    btnRow.addView(dlBtn);
+
+                                    Button delBtn = new Button(MainActivity.this);
+                                    delBtn.setText("🗑 Delete");
+                                    delBtn.setTextColor(Color.WHITE);
+                                    delBtn.setTextSize(11);
+                                    delBtn.setAllCaps(false);
+                                    delBtn.setPadding(dp(12), 0, dp(12), 0);
+                                    delBtn.setBackground(round("#EF4444", 6, "#EF4444"));
+                                    delBtn.setMinHeight(dp(32));
+                                    delBtn.setMinimumHeight(dp(32));
+                                    LinearLayout.LayoutParams delParams = wrapWrap();
+                                    delParams.setMargins(dp(8), 0, 0, 0);
+                                    delBtn.setLayoutParams(delParams);
+                                    btnRow.addView(delBtn);
+
+                                    card.addView(btnRow, matchWrap());
+
+                                    viewBtn.setOnClickListener(new View.OnClickListener() {
+                                        @Override
+                                        public void onClick(View v) {
+                                            viewMediaFile(name);
+                                        }
+                                    });
+
                                     dlBtn.setOnClickListener(new View.OnClickListener() {
                                         @Override
                                         public void onClick(View v) {
                                             downloadFile(name);
                                         }
                                     });
-                                    row.addView(dlBtn);
 
-                                    cameraLogsListContainer.addView(row);
+                                    delBtn.setOnClickListener(new View.OnClickListener() {
+                                        @Override
+                                        public void onClick(View v) {
+                                            confirmDeleteMedia(name);
+                                        }
+                                    });
+
+                                    cameraLogsListContainer.addView(card);
 
                                     View divider = new View(MainActivity.this);
                                     divider.setBackgroundColor(Color.parseColor("#E2E8F0"));
@@ -3122,12 +3400,13 @@ public class MainActivity extends Activity {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                         android.content.ContentValues values = new android.content.ContentValues();
                         values.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, filename);
-                        if (filename.endsWith(".csv")) {
+                        String fLower = filename.toLowerCase();
+                        if (fLower.endsWith(".csv")) {
                             values.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "text/csv");
-                        } else if (filename.endsWith(".jpg")) {
+                        } else if (fLower.endsWith(".jpg") || fLower.endsWith(".jpeg") || fLower.endsWith(".png")) {
                             values.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "image/jpeg");
-                        } else if (filename.endsWith(".mp4")) {
-                            values.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "video/mp4");
+                        } else if (fLower.endsWith(".mp4") || fLower.endsWith(".mjpg") || fLower.endsWith(".mjpeg") || fLower.endsWith(".avi")) {
+                            values.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "video/x-motion-jpeg");
                         } else {
                             values.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "application/octet-stream");
                         }
@@ -3173,6 +3452,201 @@ public class MainActivity extends Activity {
                     }
                     if (connection != null) connection.disconnect();
                 }
+            }
+        });
+    }
+
+    private void viewMediaFile(final String filename) {
+        final String nameLower = filename.toLowerCase();
+        final String mediaUrl = baseUrl() + "/media/" + filename;
+
+        try {
+            final android.app.Dialog dialog = new android.app.Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+            dialog.getWindow().setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(Color.BLACK));
+
+            RelativeLayout root = new RelativeLayout(this);
+            root.setBackgroundColor(Color.BLACK);
+            root.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+            // Close Button
+            Button closeBtn = new Button(this);
+            closeBtn.setText("✖ Close");
+            closeBtn.setTextColor(Color.WHITE);
+            closeBtn.setTextSize(13);
+            closeBtn.setAllCaps(false);
+            closeBtn.setBackground(round("#EF4444", 6, "#EF4444"));
+            RelativeLayout.LayoutParams closeParams = new RelativeLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            closeParams.addRule(RelativeLayout.ALIGN_PARENT_TOP);
+            closeParams.addRule(RelativeLayout.ALIGN_PARENT_END);
+            closeParams.setMargins(dp(16), dp(16), dp(16), dp(16));
+            closeBtn.setLayoutParams(closeParams);
+            closeBtn.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    dialog.dismiss();
+                }
+            });
+
+            if (nameLower.endsWith(".mp4") || nameLower.endsWith(".mjpg") || nameLower.endsWith(".mjpeg") || nameLower.endsWith(".avi")) {
+                // Video Playback: Download to local storage and launch native system Video Player
+                Toast.makeText(MainActivity.this, "Opening video in player...", Toast.LENGTH_SHORT).show();
+                executor.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            java.io.File downloadDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS);
+                            final java.io.File file = new java.io.File(downloadDir, filename);
+
+                            if (!file.exists() || file.length() < 100) {
+                                URL url = new URL(mediaUrl);
+                                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                                conn.setConnectTimeout(10000);
+                                conn.setReadTimeout(30000);
+                                InputStream in = conn.getInputStream();
+                                java.io.FileOutputStream out = new java.io.FileOutputStream(file);
+                                byte[] buf = new byte[16384];
+                                int r;
+                                while ((r = in.read(buf)) != -1) {
+                                    out.write(buf, 0, r);
+                                }
+                                out.flush();
+                                out.close();
+                                in.close();
+                                conn.disconnect();
+                            }
+
+                            runOnUiThread(new Runnable() {
+                                @Override
+                                public void run() {
+                                    try {
+                                        android.net.Uri uri;
+                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                                            uri = androidx.core.content.FileProvider.getUriForFile(MainActivity.this, getPackageName() + ".fileprovider", file);
+                                        } else {
+                                            uri = android.net.Uri.fromFile(file);
+                                        }
+                                        android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_VIEW);
+                                        intent.setDataAndType(uri, "video/*");
+                                        intent.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                                        startActivity(intent);
+                                    } catch (Exception e) {
+                                        try {
+                                            android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_VIEW);
+                                            intent.setDataAndType(android.net.Uri.parse(mediaUrl), "video/*");
+                                            startActivity(intent);
+                                        } catch (Exception ex) {
+                                            Toast.makeText(MainActivity.this, "No video player app found on phone", Toast.LENGTH_SHORT).show();
+                                        }
+                                    }
+                                }
+                            });
+                        } catch (final Exception e) {
+                            runOnUiThread(new Runnable() {
+                                @Override
+                                public void run() {
+                                    Toast.makeText(MainActivity.this, "Failed to load video: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+                                }
+                            });
+                        }
+                    }
+                });
+            } else if (nameLower.endsWith(".jpg") || nameLower.endsWith(".jpeg") || nameLower.endsWith(".png")) {
+                // Image Viewer with Loading Spinner
+                final android.widget.ProgressBar loadingBar = new android.widget.ProgressBar(this);
+                RelativeLayout.LayoutParams loadParams = new RelativeLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                loadParams.addRule(RelativeLayout.CENTER_IN_PARENT);
+                loadingBar.setLayoutParams(loadParams);
+
+                final ImageView imageView = new ImageView(this);
+                imageView.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                RelativeLayout.LayoutParams imgParams = new RelativeLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+                imageView.setLayoutParams(imgParams);
+
+                root.addView(imageView);
+                root.addView(loadingBar);
+                root.addView(closeBtn);
+                dialog.setContentView(root);
+                dialog.show();
+
+                // Load Image Bytes Asynchronously
+                executor.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            URL url = new URL(mediaUrl);
+                            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                            conn.setConnectTimeout(8000);
+                            conn.setReadTimeout(8000);
+                            InputStream is = conn.getInputStream();
+                            final Bitmap bmp = BitmapFactory.decodeStream(is);
+                            is.close();
+                            conn.disconnect();
+
+                            runOnUiThread(new Runnable() {
+                                @Override
+                                public void run() {
+                                    loadingBar.setVisibility(View.GONE);
+                                    if (bmp != null) {
+                                        imageView.setImageBitmap(bmp);
+                                    } else {
+                                        Toast.makeText(MainActivity.this, "Could not decode image", Toast.LENGTH_SHORT).show();
+                                    }
+                                }
+                            });
+                        } catch (final Exception e) {
+                            runOnUiThread(new Runnable() {
+                                @Override
+                                public void run() {
+                                    loadingBar.setVisibility(View.GONE);
+                                    Toast.makeText(MainActivity.this, "Failed to load photo: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+                                }
+                            });
+                        }
+                    }
+                });
+            } else {
+                Toast.makeText(this, "Downloading file: " + filename, Toast.LENGTH_SHORT).show();
+                downloadFile(filename);
+            }
+        } catch (Exception e) {
+            Toast.makeText(this, "Error viewing media: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void confirmDeleteMedia(final String filename) {
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("Delete File")
+            .setMessage("Are you sure you want to delete '" + filename + "' from the helmet?")
+            .setPositiveButton("Delete", new android.content.DialogInterface.OnClickListener() {
+                @Override
+                public void onClick(android.content.DialogInterface dialog, int which) {
+                    deleteMediaFile(filename);
+                }
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    private void deleteMediaFile(final String filename) {
+        requestJson("/media/delete/" + filename, new JsonCallback() {
+            @Override
+            public void onSuccess(JSONObject json) {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        Toast.makeText(MainActivity.this, "Deleted " + filename, Toast.LENGTH_SHORT).show();
+                        loadCameraSavedLogs();
+                    }
+                });
+            }
+            @Override
+            public void onError(final String message) {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        Toast.makeText(MainActivity.this, "Failed to delete: " + message, Toast.LENGTH_SHORT).show();
+                    }
+                });
             }
         });
     }
@@ -3976,15 +4450,15 @@ public class MainActivity extends Activity {
                             realPersonDetected = true;
                             float faceCx = (faceLeft + faceRight) / 2f;
 
-                            float headLeft = Math.max(0, faceLeft - faceW * 0.45f);
-                            float headTop = Math.max(0, faceTop - faceH * 0.65f);
-                            float headRight = Math.min(bitmap.getWidth(), faceRight + faceW * 0.45f);
-                            float headBottom = Math.min(bitmap.getHeight(), faceBottom + faceH * 0.85f);
+                            float headLeft = Math.max(0, faceLeft - faceW * 0.55f);
+                            float headTop = Math.max(0, faceTop - faceH * 1.35f);
+                            float headRight = Math.min(bitmap.getWidth(), faceRight + faceW * 0.55f);
+                            float headBottom = Math.min(bitmap.getHeight(), faceBottom + faceH * 0.40f);
 
-                            float bodyLeft = Math.max(0, faceCx - faceW * 2.8f);
-                            float bodyTop = Math.max(0, faceTop - faceH * 0.45f);
-                            float bodyRight = Math.min(bitmap.getWidth(), faceCx + faceW * 2.8f);
-                            float bodyBottom = Math.min(bitmap.getHeight(), faceBottom + faceH * 5.2f);
+                            float bodyLeft = Math.max(0, faceCx - faceW * 2.5f);
+                            float bodyTop = Math.max(0, faceTop - faceH * 0.40f);
+                            float bodyRight = Math.min(bitmap.getWidth(), faceCx + faceW * 2.5f);
+                            float bodyBottom = Math.min(bitmap.getHeight(), faceBottom + faceH * 4.5f);
 
                             stage1Regions.add(new Stage1Detection(bodyLeft, bodyTop, bodyRight, bodyBottom, 0, 1.0f));
                             stage1Regions.add(new Stage1Detection(headLeft, headTop, headRight, headBottom, 1, 1.0f));
@@ -4030,30 +4504,25 @@ public class MainActivity extends Activity {
                                 float aspect = height / Math.max(1f, width);
                                 float areaRatio = (width * height) / Math.max(1f, bitmap.getWidth() * bitmap.getHeight());
 
-                                // ML Kit's generic object detector does not have a reliable "person" class.
-                                // Require a human-sized, mostly vertical region before allowing PPE scan start.
                                 boolean likelyPersonRegion =
-                                        width >= bitmap.getWidth() * 0.10f &&
-                                        height >= bitmap.getHeight() * 0.22f &&
-                                        areaRatio >= 0.035f &&
-                                        aspect >= 0.80f;
+                                        width >= bitmap.getWidth() * 0.08f &&
+                                        height >= bitmap.getHeight() * 0.18f &&
+                                        areaRatio >= 0.025f;
                                 if (!likelyPersonRegion) {
                                     continue;
                                 }
                                 realPersonDetected = true;
 
-                                // Expand the Worker body region to ensure boots/feet and arms/gloves are fully included
-                                float expandedLeft = Math.max(0, left - width * 0.10f);
-                                float expandedRight = Math.min(bitmap.getWidth(), right + width * 0.10f);
+                                float expandedLeft = Math.max(0, left - width * 0.15f);
+                                float expandedRight = Math.min(bitmap.getWidth(), right + width * 0.15f);
                                 float expandedBottom = Math.min(bitmap.getHeight(), bottom + height * 0.35f);
 
-                                // We treat this expanded region as the Worker body
                                 stage1Regions.add(new Stage1Detection(expandedLeft, top, expandedRight, expandedBottom, 0, 1.0f));
 
-                                // Estimate the Head region as the upper part of this detected object (using original coordinates for better head framing)
-                                float headHeight = height * 0.45f;
-                                float headBottom = top + headHeight;
-                                stage1Regions.add(new Stage1Detection(left, top, right, headBottom, 1, 1.0f));
+                                float headHeight = height * 0.50f;
+                                float headTopEst = Math.max(0, top - height * 0.20f);
+                                float headBottomEst = top + headHeight;
+                                stage1Regions.add(new Stage1Detection(left, headTopEst, right, headBottomEst, 1, 1.0f));
                             }
                         }
                     }
@@ -4066,10 +4535,9 @@ public class MainActivity extends Activity {
                 stage1Regions = runStage1Nms(stage1Regions);
             }
 
-            // Fallback: if a person signal exists but no clean region survived, use broad frame regions.
-            if (stage1Regions.isEmpty() && realPersonDetected) {
-                stage1Regions.add(new Stage1Detection(0, 0, bitmap.getWidth(), bitmap.getHeight(), 0, 1.0f)); // Worker
-                stage1Regions.add(new Stage1Detection(bitmap.getWidth() * 0.2f, 0, bitmap.getWidth() * 0.8f, bitmap.getHeight() * 0.45f, 1, 1.0f)); // Head
+            // Always add full frame pass when a person is detected to ensure overall context is analyzed
+            if (realPersonDetected) {
+                stage1Regions.add(new Stage1Detection(0, 0, bitmap.getWidth(), bitmap.getHeight(), 0, 1.0f));
             }
 
             long now = System.currentTimeMillis();
@@ -4135,15 +4603,28 @@ public class MainActivity extends Activity {
                     }
 
                     if (modelClassId != -1) {
-                        // Remap HuggingFace output index to match your app's existing 6-class index order:
+                        // Remap HuggingFace model output index to match app's 6-class index order:
                         // HF classes: 0=Gloves, 1=Vest, 2=Goggles, 3=Helmet, 4=Mask, 5=Safety_shoe
-                        // App classes: 0=Boots, 1=Gloves, 2=Helmet, 3=INCORRECT-MASK, 4=Mask, 5=Vest
+                        // App classes: 0=Boots, 1=Gloves, 2=Helmet, 3=Goggles, 4=Mask, 5=Vest
                         if (modelClassId == 0) modelClassId = 1;       // HF Gloves -> App Gloves
                         else if (modelClassId == 1) modelClassId = 5;  // HF Vest -> App Vest
-                        else if (modelClassId == 2) modelClassId = 3;  // HF Goggles -> App INCORRECT-MASK
+                        else if (modelClassId == 2) modelClassId = 3;  // HF Goggles -> App Goggles
                         else if (modelClassId == 3) modelClassId = 2;  // HF Helmet -> App Helmet
                         else if (modelClassId == 4) modelClassId = 4;  // HF Mask -> App Mask
                         else if (modelClassId == 5) modelClassId = 0;  // HF Safety_shoe -> App Boots
+
+                        // 1. Head crop filter: Inside Head crops (classId == 1), Vest (5) and Boots (0) cannot exist!
+                        if (region.classId == 1 && (modelClassId == 5 || modelClassId == 0)) {
+                            continue;
+                        }
+
+                        // 2. Anatomical filter for Vest: Vest center must be in torso region (cy >= 250 in 640x640 space)
+                        if (modelClassId == 5) {
+                            float cy = stage2Out[0][1][boxIdx];
+                            if (cy < 250f) {
+                                continue;
+                            }
+                        }
 
                         float cutoff = getConfidenceThreshold(modelClassId);
                         if (maxConf > cutoff) {
@@ -4240,6 +4721,8 @@ public class MainActivity extends Activity {
                     scanDetectedMask = false;
                     scanDetectedGoggles = false;
                     java.util.Arrays.fill(scanBestConfidence, 0f);
+                    java.util.Arrays.fill(scanHitCount, 0);
+                    java.util.Arrays.fill(scanFirstHitTime, 0L);
                     
                     // Notify user that scanning has started
                     if (isTtsReady && ttsEngine != null) {
@@ -4250,12 +4733,9 @@ public class MainActivity extends Activity {
                 }
                 
                 if (isScanningActive) {
-                    // Accumulate detections during the active scan window
+                    // Accumulate unique frame detections during active scan window
                     for (Detection det : filteredDetections) {
                         rememberScanDetection(det.classId, det.confidence);
-                    }
-                    for (CachedDetection cached : cachedDetections) {
-                        rememberScanDetection(cached.detection.classId, cached.detection.confidence);
                     }
                 } else if (!personCurrentlyInFrame && (scanResultsAnnounced || isScanningActive)) {
                     resetPpeScanState(true);
@@ -4373,11 +4853,11 @@ public class MainActivity extends Activity {
     private float getConfidenceThreshold(int classId) {
         switch (classId) {
             case 0: return 0.25f; // Boots
-            case 1: return 0.45f; // Gloves
-            case 2: return 0.50f; // Helmet (raised to 0.50 per user request)
-            case 3: return 0.15f; // Goggles
+            case 1: return 0.35f; // Gloves
+            case 2: return 0.20f; // Helmet (Easier detection for Helmet!)
+            case 3: return 0.25f; // Goggles
             case 4: return 0.25f; // Mask
-            case 5: return 0.25f; // Vest
+            case 5: return 0.45f; // Vest (Higher threshold for Vest to filter low-score 27% noise on helmets)
             default: return 0.25f;
         }
     }
@@ -4429,29 +4909,53 @@ public class MainActivity extends Activity {
     }
 
     private java.util.List<Detection> runLocalNms(java.util.List<Detection> detections) {
+        if (detections == null || detections.isEmpty()) return new java.util.ArrayList<>();
+        
+        java.util.List<Detection> sorted = new java.util.ArrayList<>(detections);
+        java.util.Collections.sort(sorted, new java.util.Comparator<Detection>() {
+            @Override
+            public int compare(Detection a, Detection b) {
+                return Float.compare(b.confidence, a.confidence);
+            }
+        });
+
         java.util.List<Detection> filtered = new java.util.ArrayList<>();
-        for (Detection det : detections) {
+        for (Detection det : sorted) {
             boolean keep = true;
+            Detection toRemove = null;
             for (Detection existing : filtered) {
-                if (det.classId == existing.classId) {
-                    float intersectionLeft = Math.max(det.left, existing.left);
-                    float intersectionTop = Math.max(det.top, existing.top);
-                    float intersectionRight = Math.min(det.right, existing.right);
-                    float intersectionBottom = Math.min(det.bottom, existing.bottom);
-                    if (intersectionRight > intersectionLeft && intersectionBottom > intersectionTop) {
-                        float intersectionArea = (intersectionRight - intersectionLeft) * (intersectionBottom - intersectionTop);
-                        float detArea = (det.right - det.left) * (det.bottom - det.top);
-                        float existingArea = (existing.right - existing.left) * (existing.bottom - existing.top);
-                        float unionArea = detArea + existingArea - intersectionArea;
-                        float iou = unionArea > 0 ? intersectionArea / unionArea : 0f;
-                        if (iou > 0.45f) {
-                            if (det.confidence <= existing.confidence) {
-                                keep = false;
-                                break;
-                            }
+                float intersectionLeft = Math.max(det.left, existing.left);
+                float intersectionTop = Math.max(det.top, existing.top);
+                float intersectionRight = Math.min(det.right, existing.right);
+                float intersectionBottom = Math.min(det.bottom, existing.bottom);
+                if (intersectionRight > intersectionLeft && intersectionBottom > intersectionTop) {
+                    float intersectionArea = (intersectionRight - intersectionLeft) * (intersectionBottom - intersectionTop);
+                    float detArea = (det.right - det.left) * (det.bottom - det.top);
+                    float existingArea = (existing.right - existing.left) * (existing.bottom - existing.top);
+                    float unionArea = detArea + existingArea - intersectionArea;
+                    float iou = unionArea > 0 ? intersectionArea / unionArea : 0f;
+
+                    // 1. Same-class overlap suppression
+                    if (det.classId == existing.classId && iou > 0.35f) {
+                        keep = false;
+                        break;
+                    }
+
+                    // 2. Cross-class collision resolution: Helmet (class 2) vs Vest (class 5) on head/neck area
+                    if (iou > 0.30f) {
+                        if (existing.classId == 2 && det.classId == 5) {
+                            // Helmet already exists in this region -> reject colliding Vest box!
+                            keep = false;
+                            break;
+                        } else if (det.classId == 2 && existing.classId == 5) {
+                            // Incoming detection is Helmet -> prioritize Helmet over colliding Vest box!
+                            toRemove = existing;
                         }
                     }
                 }
+            }
+            if (toRemove != null) {
+                filtered.remove(toRemove);
             }
             if (keep) {
                 filtered.add(det);

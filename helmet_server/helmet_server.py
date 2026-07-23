@@ -97,6 +97,13 @@ _GESTURE_TIMEOUT   = 1.5
 _level_start       = None
 _LEVEL_RESET_TIME  = 2.0
 
+# 3x Gesture command trackers
+_left_tilt_times   = deque(maxlen=5)
+_right_tilt_times  = deque(maxlen=5)
+_nod_times         = deque(maxlen=5)
+_last_head_cmd     = "NONE"
+_last_head_cmd_id  = 0
+
 # Altitude baseline (set on first good reading)
 _alt_baseline      = None
 
@@ -299,32 +306,26 @@ def calibrate_gyro():
 
     calibration_status = "calibrating"
     try:
-        # Settle sensor (throw away initial samples)
-        for _ in range(500):
-            read_word(0x43)
-            read_word(0x45)
-            read_word(0x47)
-            time.sleep(0.002)
-
         gx_sum = 0
         gy_sum = 0
         gz_sum = 0
-        samples = 2000
+        samples = 300
 
         for _ in range(samples):
-            gx_sum += read_word(0x43)
-            gy_sum += read_word(0x45)
-            gz_sum += read_word(0x47)
-            time.sleep(0.002)
+            gx, gy, gz = _get_gyro_raw()
+            gx_sum += gx
+            gy_sum += gy
+            gz_sum += gz
+            time.sleep(0.005)
 
         gyro_offset_x = gx_sum / samples
         gyro_offset_y = gy_sum / samples
         gyro_offset_z = gz_sum / samples
         calibration_status = "done"
-        print(f"Calibration done. Offsets: GX={gyro_offset_x:.2f}, GY={gyro_offset_y:.2f}, GZ={gyro_offset_z:.2f}")
+        print(f"[GyroCalibration] Done. Offsets: GX={gyro_offset_x:.2f}, GY={gyro_offset_y:.2f}, GZ={gyro_offset_z:.2f}", flush=True)
     except Exception as e:
         calibration_status = f"failed: {e}"
-        print(f"Calibration failed: {e}")
+        print(f"[GyroCalibration] Failed: {e}", flush=True)
 
 
 def read_imu():
@@ -463,8 +464,24 @@ def list_media():
     try:
         files = []
         if os.path.exists(MEDIA_DIR):
+            import shutil
+            # Auto-convert any old raw .mjpg/.mjpeg files to standard playable .mp4
+            if shutil.which("ffmpeg"):
+                for f in os.listdir(MEDIA_DIR):
+                    if f.lower().endswith((".mjpg", ".mjpeg")):
+                        raw_p = os.path.join(MEDIA_DIR, f)
+                        mp4_n = os.path.splitext(f)[0] + ".mp4"
+                        mp4_p = os.path.join(MEDIA_DIR, mp4_n)
+                        if not os.path.exists(mp4_p):
+                            try:
+                                subprocess.run(["ffmpeg", "-y", "-i", raw_p, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-loglevel", "quiet", mp4_p], timeout=15)
+                                if os.path.exists(mp4_p) and os.path.getsize(mp4_p) > 1000:
+                                    os.remove(raw_p)
+                            except Exception:
+                                pass
+
             for f in sorted(os.listdir(MEDIA_DIR), reverse=True):
-                if f.endswith(".csv") or f.endswith(".mp4") or f.endswith(".h264") or f.endswith(".jpg"):
+                if f.lower().endswith((".csv", ".mp4", ".h264", ".jpg", ".jpeg", ".mjpg", ".mjpeg", ".avi", ".png", ".txt")):
                     file_path = os.path.join(MEDIA_DIR, f)
                     files.append({
                         "name": f,
@@ -481,10 +498,16 @@ def download_file(filename):
     return send_from_directory(MEDIA_DIR, filename, as_attachment=True)
 
 
+@app.route("/media/<filename>", methods=["GET"])
+def download_media_alias(filename):
+    return send_from_directory(MEDIA_DIR, filename, as_attachment=True)
+
+
 # ── Camera System ──────────────────────────────────────────────────────────
 
 # Global recording and lock variables
 recording_file_handle = None
+temp_record_mjpg = None
 recording_lock = Lock()
 camera_lock = Lock()
 latest_frame = None
@@ -577,6 +600,12 @@ def camera_worker():
             except Exception:
                 pass
 
+        # Check if Raspberry Pi Camera Module 3 (rpicam-vid / libcamera-vid) is present
+        import shutil
+        if not candidates:
+            if shutil.which("rpicam-vid") or shutil.which("libcamera-vid"):
+                candidates.append((0, "/dev/video0"))
+
         candidates.sort()
         return [dev for _, dev in candidates]
 
@@ -594,6 +623,22 @@ def camera_worker():
             configure_usb_camera(dev)
 
             strategies = [
+                (
+                    "rpicam-vid-mjpeg-640x480-30",
+                    [
+                        "rpicam-vid", "--inline", "-t", "0",
+                        "--width", "640", "--height", "480",
+                        "--framerate", "30", "--codec", "mjpeg", "-o", "-"
+                    ]
+                ),
+                (
+                    "libcamera-vid-mjpeg-640x480-30",
+                    [
+                        "libcamera-vid", "--inline", "-t", "0",
+                        "--width", "640", "--height", "480",
+                        "--framerate", "30", "--codec", "mjpeg", "-o", "-"
+                    ]
+                ),
                 (
                     "v4l2-mjpeg-640x480-30",
                     [
@@ -698,6 +743,7 @@ def camera_worker():
                                 if recording_file_handle is not None:
                                     try:
                                         recording_file_handle.write(last_jpg)
+                                        recording_file_handle.flush()
                                     except Exception as e:
                                         print(f"[CameraWorker] Recording write error: {e}", flush=True)
 
@@ -788,6 +834,22 @@ def take_photo():
     filename = datetime.now().strftime("photo_%Y%m%d_%H%M%S.jpg")
     path = os.path.join(MEDIA_DIR, filename)
 
+    # 1. Try native rpicam-still / libcamera-still on Raspberry Pi for full-resolution clear photo
+    import shutil
+    tool = shutil.which("rpicam-still") or shutil.which("libcamera-still")
+    if tool:
+        try:
+            res = subprocess.run(
+                [tool, "-t", "800", "-o", path, "--width", "1920", "--height", "1080", "-n"],
+                capture_output=True, timeout=6
+            )
+            if os.path.exists(path) and os.path.getsize(path) > 2000:
+                print(f"[Camera] Photo captured via {tool}: {path}", flush=True)
+                return jsonify({"success": True, "file": path})
+        except Exception as e:
+            print(f"[Camera] {tool} error: {e}, falling back to frame stream", flush=True)
+
+    # 2. Fallback to active stream frame
     with camera_lock:
         frame = latest_frame
 
@@ -819,19 +881,35 @@ def take_photo():
     return jsonify({"success": False, "error": "No camera frame available"}), 500
 
 
+@app.route("/media/delete/<filename>", methods=["DELETE", "POST", "GET"])
+def delete_media_file(filename):
+    try:
+        safe_name = os.path.basename(filename)
+        path = os.path.join(MEDIA_DIR, safe_name)
+        if os.path.exists(path):
+            os.remove(path)
+            print(f"[Media] Deleted file: {safe_name}", flush=True)
+            return jsonify({"success": True, "message": f"Deleted {safe_name}"})
+        else:
+            return jsonify({"success": False, "error": "File not found"}), 404
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/camera/record/start", methods=["POST", "GET"])
 def start_recording():
-    global recording_file_handle, record_file
+    global recording_file_handle, record_file, temp_record_mjpg
     with recording_lock:
         if recording_file_handle is not None:
             return jsonify({"success": False, "message": "Already recording"}), 400
 
-        filename = datetime.now().strftime("video_%Y%m%d_%H%M%S.mjpg")
+        filename = datetime.now().strftime("video_%Y%m%d_%H%M%S.mp4")
         record_file = os.path.join(MEDIA_DIR, filename)
+        temp_record_mjpg = os.path.join(MEDIA_DIR, filename.replace(".mp4", ".mjpg"))
         try:
-            recording_file_handle = open(record_file, "wb")
+            recording_file_handle = open(temp_record_mjpg, "wb")
             start_camera_thread()
-            print(f"[Camera] Started recording to {record_file}", flush=True)
+            print(f"[Camera] Started MP4 recording session to {record_file}", flush=True)
             return jsonify({"success": True, "message": "Recording started", "file": record_file})
         except Exception as e:
             return jsonify({"success": False, "message": f"Failed to start recording: {e}"}), 500
@@ -839,7 +917,7 @@ def start_recording():
 
 @app.route("/camera/record/stop", methods=["POST", "GET"])
 def stop_recording():
-    global recording_file_handle, record_file
+    global recording_file_handle, record_file, temp_record_mjpg
     with recording_lock:
         if recording_file_handle is None:
             return jsonify({"success": False, "message": "Not recording"}), 400
@@ -848,18 +926,46 @@ def stop_recording():
             recording_file_handle.close()
         except Exception: pass
         recording_file_handle = None
-        finished_file = record_file
-        record_file = None
         
-        should_stop_camera = False
-        with active_clients_lock:
-            if active_clients == 0:
-                should_stop_camera = True
-        if should_stop_camera:
-            stop_camera_thread()
+        target_mp4 = record_file
+        raw_mjpg = temp_record_mjpg
+        record_file = None
+        temp_record_mjpg = None
+
+        def convert_in_background(raw_file, target_file):
+            import shutil
+            if shutil.which("ffmpeg") and raw_file and os.path.exists(raw_file):
+                try:
+                    cmd = [
+                        "ffmpeg", "-y",
+                        "-f", "mjpeg", "-framerate", "30", "-i", raw_file,
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                        "-preset", "ultrafast",
+                        "-movflags", "+faststart",
+                        target_file
+                    ]
+                    print(f"[Camera] Running async FFmpeg conversion: {' '.join(cmd)}", flush=True)
+                    res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                    if os.path.exists(target_file) and os.path.getsize(target_file) > 1000:
+                        os.remove(raw_file)
+                        print(f"[Camera] Converted recording to MP4: {target_file}", flush=True)
+                    else:
+                        print(f"[Camera] FFmpeg conversion failed, fallback rename: {res.stderr}", flush=True)
+                        if os.path.exists(raw_file) and not os.path.exists(target_file):
+                            os.rename(raw_file, target_file)
+                except Exception as e:
+                    print(f"[Camera] Async conversion exception: {e}", flush=True)
+                    if os.path.exists(raw_file) and not os.path.exists(target_file):
+                        os.rename(raw_file, target_file)
+            elif raw_file and os.path.exists(raw_file):
+                if not os.path.exists(target_file):
+                    os.rename(raw_file, target_file)
+
+        if raw_mjpg:
+            Thread(target=convert_in_background, args=(raw_mjpg, target_mp4), daemon=True).start()
                 
-        print(f"[Camera] Stopped recording. Saved to {finished_file}", flush=True)
-        return jsonify({"success": True, "message": "Recording stopped", "file": finished_file})
+        print(f"[Camera] Stopped recording session instantly. Saved to {target_mp4}", flush=True)
+        return jsonify({"success": True, "message": "Recording stopped", "file": target_mp4})
 
 
 @app.route("/video", methods=["GET"])
@@ -988,6 +1094,7 @@ def _calc_orientation(ax, ay, az):
 def posture_engine():
     global posture_state, _gesture_history, _last_orientation
     global _gesture_start, _level_start, _alt_baseline
+    global _left_tilt_times, _right_tilt_times, _nod_times, _last_head_cmd, _last_head_cmd_id
 
     fall_state    = "NORMAL"
     free_fall_ts  = None
@@ -1007,24 +1114,25 @@ def posture_engine():
 
             # ── Turn detection: integrate gyro Z to get absolute yaw angle ──────
             now_tick = time.time()
-            dt       = now_tick - last_tick
+            dt       = max(0.001, min(0.2, now_tick - last_tick))
             last_tick = now_tick
 
             gz_cal  = gz - gyro_offset_z
             yaw_dps = gz_cal / 131.0          # degrees per second
 
-            # Integrate: add rotation this tick
-            yaw_angle += yaw_dps * dt
+            # Integrate: add rotation when actively moving, otherwise decay back to FORWARD
+            if abs(yaw_dps) > 4.0:
+                yaw_angle += yaw_dps * dt
+            else:
+                yaw_angle *= 0.88
 
-            # Drift correction: when head is still, slowly pull back toward 0
-            # This prevents infinite accumulation but holds the angle for ~30s
-            if abs(gz_cal) < _YAW_STILL_THRESH:
-                yaw_angle *= _YAW_DRIFT_DECAY
+            # Clamp yaw_angle to [-90, +90] to prevent drift accumulation
+            yaw_angle = max(-90.0, min(90.0, yaw_angle))
 
             # Classify based on accumulated angle
-            if yaw_angle > _YAW_TURN_ANGLE:
+            if yaw_angle > 25.0:
                 turn_direction = "LOOKING LEFT"
-            elif yaw_angle < -_YAW_TURN_ANGLE:
+            elif yaw_angle < -25.0:
                 turn_direction = "LOOKING RIGHT"
             else:
                 turn_direction = "FORWARD"
@@ -1076,6 +1184,38 @@ def posture_engine():
                 _level_start = None
                 if orientation != _last_orientation:
                     _gesture_history.append(orientation)
+                    
+                    # Track 3x simultaneous / quick gesture command triggers
+                    if orientation == "LEFT TILT":
+                        _left_tilt_times.append(now)
+                        valid_left = [t for t in _left_tilt_times if now - t <= 3.5]
+                        _left_tilt_times.clear()
+                        _left_tilt_times.extend(valid_left)
+                        if len(_left_tilt_times) >= 3:
+                            _last_head_cmd = "START_PPE"
+                            _last_head_cmd_id = int(now * 1000)
+                            _left_tilt_times.clear()
+
+                    elif orientation == "RIGHT TILT":
+                        _right_tilt_times.append(now)
+                        valid_right = [t for t in _right_tilt_times if now - t <= 3.5]
+                        _right_tilt_times.clear()
+                        _right_tilt_times.extend(valid_right)
+                        if len(_right_tilt_times) >= 3:
+                            _last_head_cmd = "START_LOCATION"
+                            _last_head_cmd_id = int(now * 1000)
+                            _right_tilt_times.clear()
+
+                    elif orientation in ("LOOKING UP", "LOOKING DOWN"):
+                        _nod_times.append(now)
+                        valid_nods = [t for t in _nod_times if now - t <= 3.5]
+                        _nod_times.clear()
+                        _nod_times.extend(valid_nods)
+                        if len(_nod_times) >= 3:
+                            _last_head_cmd = "STOP_ALL"
+                            _last_head_cmd_id = int(now * 1000)
+                            _nod_times.clear()
+
                     _last_orientation = orientation
                     if len(_gesture_history) == 1:
                         _gesture_start = now
@@ -1110,16 +1250,18 @@ def posture_engine():
 
             # ── Write shared state ───────────────────────────────────────
             with posture_lock:
-                posture_state["orientation"]      = orientation
-                posture_state["pitch"]            = round(pitch, 1)
-                posture_state["roll"]             = round(roll, 1)
-                posture_state["turn_direction"]   = turn_direction
-                posture_state["yaw_rate_dps"]     = round(yaw_dps, 1)
-                posture_state["fall_state"]       = fall_state
-                posture_state["last_gesture"]     = last_gesture
-                posture_state["altitude_m"]       = round(alt, 2)
-                posture_state["altitude_delta_m"] = alt_delta
-                posture_state["acc_magnitude"]    = round(acc_mag, 0)
+                posture_state["orientation"]         = orientation
+                posture_state["pitch"]               = round(pitch, 1)
+                posture_state["roll"]                = round(roll, 1)
+                posture_state["turn_direction"]      = turn_direction
+                posture_state["yaw_rate_dps"]        = round(yaw_dps, 1)
+                posture_state["fall_state"]          = fall_state
+                posture_state["last_gesture"]        = last_gesture
+                posture_state["altitude_m"]          = round(alt, 2)
+                posture_state["altitude_delta_m"]    = alt_delta
+                posture_state["acc_magnitude"]       = round(acc_mag, 0)
+                posture_state["active_head_command"] = _last_head_cmd
+                posture_state["head_cmd_id"]         = _last_head_cmd_id
 
         except Exception as e:
             print(f"[PostureEngine] error: {e}")
@@ -1133,12 +1275,40 @@ def get_posture():
         return jsonify(dict(posture_state))
 
 
+@app.route("/", methods=["GET"])
+def index():
+    return send_from_directory(BASE_DIR, "index.html")
+
+
+def start_udp_discovery():
+    import socket
+    def udp_listener():
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("0.0.0.0", 5005))
+            print("[UDP Discovery] Listening on UDP 5005 for auto-discovery pings...")
+            while True:
+                data, addr = sock.recvfrom(1024)
+                if data and b"SMART_HELMET_DISCOVER" in data:
+                    print(f"[UDP Discovery] Ping received from {addr}")
+                    response = b"SMART_HELMET_RESPONSE:5000"
+                    sock.sendto(response, addr)
+        except Exception as e:
+            print(f"[UDP Discovery] Listener error: {e}")
+
+    Thread(target=udp_listener, daemon=True).start()
+
+
 if __name__ == "__main__":
     os.makedirs(MEDIA_DIR, exist_ok=True)
+    start_udp_discovery()
     
-    # Camera thread is now started dynamically on-demand when requested by a client.
+    # Persistent Camera Daemon: keeps device warm & open for unlimited recording sessions
+    start_camera_thread()
     
     if init_imu():
         Thread(target=calibrate_gyro, daemon=True).start()
         Thread(target=posture_engine, daemon=True).start()
     app.run(host="0.0.0.0", port=5000)
+

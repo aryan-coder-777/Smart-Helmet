@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Helmet Control Center</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0b0f19;
+            --card-bg: #151d30;
+            --text-color: #f1f5f9;
+            --text-muted: #94a3b8;
+            --primary: #3b82f6;
+            --primary-gradient: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+            --accent-green: #10b981;
+            --accent-green-gradient: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            --accent-orange: #f59e0b;
+            --accent-orange-gradient: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+            --border-color: #24324f;
+            --glow-color: rgba(59, 130, 246, 0.15);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Outfit', sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            line-height: 1.6;
+            padding: 2rem 1rem;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .container {
+            max-width: 1100px;
+            width: 100%;
+        }
+
+        /* Header Style */
+        header {
+            text-align: center;
+            margin-bottom: 3.5rem;
+            position: relative;
+        }
+
+        .logo-container {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            background: var(--primary-gradient);
+            margin-bottom: 1.5rem;
+            box-shadow: 0 0 30px rgba(139, 92, 246, 0.4);
+            animation: pulse 2s infinite;
+        }
+
+        .logo-container svg {
+            width: 44px;
+            height: 44px;
+            fill: white;
+        }
+
+        h1 {
+            font-size: 2.8rem;
+            font-weight: 800;
+            background: linear-gradient(to right, #ffffff, #94a3b8);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 0.5rem;
+        }
+
+        .subtitle {
+            color: var(--text-muted);
+            font-size: 1.1rem;
+            max-width: 600px;
+            margin: 0 auto 1.5rem auto;
+            font-weight: 300;
+        }
+
+        /* Status Pill */
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            background-color: #1e293b;
+            border: 1px solid var(--border-color);
+            padding: 0.5rem 1.2rem;
+            border-radius: 9999px;
+            font-size: 0.9rem;
+            font-weight: 500;
+            color: #e2e8f0;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background-color: var(--accent-green);
+            box-shadow: 0 0 10px var(--accent-green);
+        }
+
+        /* Feature Cards Grid */
+        .features-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 2rem;
+            margin-bottom: 3rem;
+        }
+
+        @media (min-width: 768px) {
+            .features-grid {
+                grid-template-columns: repeat(3, 1fr);
+            }
+        }
+
+        .card {
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 1.25rem;
+            padding: 2.2rem;
+            position: relative;
+            overflow: hidden;
+            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 4px;
+        }
+
+        .card.camera-card::before { background: var(--primary-gradient); }
+        .card.imu-card::before { background: var(--accent-green-gradient); }
+        .card.location-card::before { background: var(--accent-orange-gradient); }
+
+        .card:hover {
+            transform: translateY(-8px);
+            border-color: rgba(255, 255, 255, 0.15);
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 0 30px var(--glow-color);
+        }
+
+        .card.camera-card:hover { --glow-color: rgba(59, 130, 246, 0.15); }
+        .card.imu-card:hover { --glow-color: rgba(16, 185, 129, 0.12); }
+        .card.location-card:hover { --glow-color: rgba(245, 158, 11, 0.12); }
+
+        .icon-wrapper {
+            width: 60px;
+            height: 60px;
+            border-radius: 1rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 1.8rem;
+        }
+
+        .camera-card .icon-wrapper { background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.2); }
+        .imu-card .icon-wrapper { background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.2); }
+        .location-card .icon-wrapper { background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.2); }
+
+        .icon-wrapper svg {
+            width: 32px;
+            height: 32px;
+        }
+
+        .camera-card svg { fill: #3b82f6; }
+        .imu-card svg { fill: #10b981; }
+        .location-card svg { fill: #f59e0b; }
+
+        h2 {
+            font-size: 1.6rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+            color: #ffffff;
+        }
+
+        .card-desc {
+            color: var(--text-muted);
+            font-size: 0.95rem;
+            margin-bottom: 1.8rem;
+            font-weight: 300;
+            flex-grow: 1;
+        }
+
+        .bullet-list {
+            list-style: none;
+            display: flex;
+            flex-direction: column;
+            gap: 0.8rem;
+        }
+
+        .bullet-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.8rem;
+            font-size: 0.9rem;
+            color: #cbd5e1;
+        }
+
+        .bullet-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            margin-top: 0.55rem;
+            flex-shrink: 0;
+        }
+
+        .camera-card .bullet-dot { background-color: #3b82f6; box-shadow: 0 0 6px #3b82f6; }
+        .imu-card .bullet-dot { background-color: #10b981; box-shadow: 0 0 6px #10b981; }
+        .location-card .bullet-dot { background-color: #f59e0b; box-shadow: 0 0 6px #f59e0b; }
+
+        .bullet-title {
+            font-weight: 600;
+            color: #ffffff;
+            margin-right: 0.2rem;
+        }
+
+        /* Footer Info */
+        footer.page-footer {
+            margin-top: auto;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            padding-top: 2rem;
+            border-top: 1px solid var(--border-color);
+            width: 100%;
+        }
+
+        /* Keyframes */
+        @keyframes pulse {
+            0% {
+                box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.4);
+            }
+            70% {
+                box-shadow: 0 0 0 15px rgba(59, 130, 246, 0);
+            }
+            100% {
+                box-shadow: 0 0 0 0 rgba(59, 130, 246, 0);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo-container">
+                <!-- Smart Helmet SVG Icon -->
+                <svg viewBox="0 0 24 24">
+                    <path d="M12,2A10,10 0 0,0 2,12C2,15.68 4.47,18.78 7.84,19.69L7.4,16.5C8.84,17.2 10.38,17.5 12,17.5C13.62,17.5 15.16,17.2 16.6,16.5L16.16,19.69C19.53,18.78 22,15.68 22,12A10,10 0 0,0 12,2M12,4A2,2 0 0,1 14,6A2,2 0 0,1 12,8A2,2 0 0,1 10,6A2,2 0 0,1 12,4M12,16C9,16 6.32,14.6 4.54,12.44C5.16,10.6 6.88,9.25 9,9.07C9,10 9.81,10.75 10.75,10.75H13.25C14.19,10.75 15,10 15,9.07C17.12,9.25 18.84,10.6 19.46,12.44C17.68,14.6 15,16 12,16Z"/>
+                </svg>
+            </div>
+            <h1>Smart Helmet Command Center</h1>
+            <p class="subtitle">Radxa Zero 3W Edge Computing Telemetry & Sensor Processing Hub</p>
+            <div class="status-badge">
+                <div class="status-dot"></div>
+                <span>Flask Telemetry Server Active</span>
+            </div>
+        </header>
+
+        <main class="features-grid">
+            <!-- 1. CAMERA FEATURE CARD -->
+            <section class="card camera-card">
+                <div class="icon-wrapper">
+                    <!-- Camera SVG Icon -->
+                    <svg viewBox="0 0 24 24">
+                        <path d="M4,4H7L9,2H15L17,4H20A2,2 0 0,1 22,6V18A2,2 0 0,1 20,20H4A2,2 0 0,1 2,18V6A2,2 0 0,1 4,4M12,7A5,5 0 0,0 7,12A5,5 0 0,0 12,17A5,5 0 0,0 17,12A5,5 0 0,0 12,7M12,9A3,3 0 0,1 15,12A3,3 0 0,1 12,15A3,3 0 0,1 9,12A3,3 0 0,1 12,9Z"/>
+                    </svg>
+                </div>
+                <h2>Camera & Vision</h2>
+                <p class="card-desc">Processes incoming MJPEG video feeds using native JNI and lightweight model gating to provide high-speed industrial safety inspection.</p>
+                <ul class="bullet-list">
+                    <li class="bullet-item">
+                        <div class="bullet-dot"></div>
+                        <div><span class="bullet-title">PPE Detection:</span> Real-time scanning using custom YOLOv8 models. Instantly detects boots, gloves, helmets, vests, goggles, and masks.</div>
+                    </li>
+                    <li class="bullet-item">
+                        <div class="bullet-dot"></div>
+                        <div><span class="bullet-title">Smart Gating:</span> Uses Google ML Kit Face Detection as a low-power filter. YOLOv8 classifier is only triggered when a person is in frame, reducing CPU idle usage by 89%.</div>
+                    </li>
+                    <li class="bullet-item">
+                        <div class="bullet-dot"></div>
+                        <div><span class="bullet-title">OCR Code Scanning:</span> Integrates Baidu PaddleOCR runtime via C++ native JNI to read worker identification tags and verify security authorization.</div>
+                    </li>
+                </ul>
+            </section>
+
+            <!-- 2. IMU FEATURE CARD -->
+            <section class="card imu-card">
+                <div class="icon-wrapper">
+                    <!-- Sensor/IMU SVG Icon -->
+                    <svg viewBox="0 0 24 24">
+                        <path d="M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,4A8,8 0 0,1 20,12A8,8 0 0,1 12,20A8,8 0 0,1 4,12A8,8 0 0,1 12,4M12,6A6,6 0 0,0 6,12A6,6 0 0,0 12,18A6,6 0 0,0 18,12A6,6 0 0,0 12,6M12,8A4,4 0 0,1 16,12A4,4 0 0,1 12,16A4,4 0 0,1 8,12A4,4 0 0,1 12,8Z"/>
+                    </svg>
+                </div>
+                <h2>IMU Telemetry</h2>
+                <p class="card-desc">Monitors high-frequency accelerometer, gyroscope, and altimeter registers via a shared I2C bus lock to evaluate physical safety states.</p>
+                <ul class="bullet-list">
+                    <li class="bullet-item">
+                        <div class="bullet-dot"></div>
+                        <div><span class="bullet-title">Fall Detection FSM:</span> Tracks 3D acceleration and angular velocity at 20Hz. Evaluates state transitions (Normal -> Free Fall -> Impact -> Calmness) to identify worker accidents.</div>
+                    </li>
+                    <li class="bullet-item">
+                        <div class="bullet-dot"></div>
+                        <div><span class="bullet-title">Posture Recognition:</span> Tracks roll and pitch matrices to calculate head tilt angles, warning workers when looking up or down excessively.</div>
+                    </li>
+                    <li class="bullet-item">
+                        <div class="bullet-dot"></div>
+                        <div><span class="bullet-title">Gesture Commands:</span> Decodes consecutive roll/pitch motions to identify nods, reverse nods, and headshakes for hands-free user interaction.</div>
+                    </li>
+                </ul>
+            </section>
+
+            <!-- 3. LOCATION FEATURE CARD -->
+            <section class="card location-card">
+                <div class="icon-wrapper">
+                    <!-- Map/Location SVG Icon -->
+                    <svg viewBox="0 0 24 24">
+                        <path d="M12,2A10,10 0 0,0 2,12C2,18.4 12,22 12,22C12,22 22,18.4 22,12A10,10 0 0,0 12,2M12,4A6,6 0 0,1 18,10C18,14.2 12,19.3 12,19.3C12,19.3 6,14.2 6,10A6,6 0 0,1 12,4M12,6A4,4 0 0,0 8,10A4,4 0 0,0 12,14A4,4 0 0,0 16,10A4,4 0 0,0 12,6Z"/>
+                    </svg>
+                </div>
+                <h2>Location & SOS</h2>
+                <p class="card-desc">Integrates mobile GPS hardware and cellular network registers to ensure worker localization, zone compliance, and automated emergency routing.</p>
+                <ul class="bullet-list">
+                    <li class="bullet-item">
+                        <div class="bullet-dot"></div>
+                        <div><span class="bullet-title">Live Tracking:</span> Dynamically maps active GPS coordinates and tracks elevation deltas using real-time barometric pressure shifts.</div>
+                    </li>
+                    <li class="bullet-item">
+                        <div class="bullet-dot"></div>
+                        <div><span class="bullet-title">SOS SMS Broadcasting:</span> Triggers a 10-second countdown immediately upon fall detection, sending automated coordinates to registered supervisors.</div>
+                    </li>
+                    <li class="bullet-item">
+                        <div class="bullet-dot"></div>
+                        <div><span class="bullet-title">Zone Compliance:</span> Maps locations against OCR scanned safety permits to ensure the correct personnel are in authorized sections.</div>
+                    </li>
+                </ul>
+            </section>
+        </main>
+
+        <footer class="page-footer">
+            <p>Smart Helmet Project © 2026. Powered by Radxa Zero 3W Edge Node & Android OS SDK.</p>
+        </footer>
+    </div>
+</body>
+</html>

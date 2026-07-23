@@ -297,7 +297,11 @@ The camera engine manages an on-demand background worker (`camera_worker`) that 
 
 ### Fall Detection Finite State Machine
 
-![Fall Detection FSM](docs/images/fall_detection_fsm.jpg)
+<p align="center">
+  <img src="./docs/images/fall_detection_fsm.jpg" alt="SMART HELMET 4-STAGE FALL DETECTION FSM" width="90%"/>
+  <br/>
+  <sub><b>Figure: SMART HELMET 4-Stage Fall Detection Finite State Machine</b></sub>
+</p>
 
 ```python
 # ─────────────────────────────────────────────────────────────────────────────
@@ -437,7 +441,11 @@ Model trained on **Kaggle** with NVIDIA Tesla T4 GPU:
 
 The helmet classifies head orientation and turn direction into the following states:
 
-![Posture States Diagram](docs/images/posture_states.jpg)
+<p align="center">
+  <img src="./docs/images/posture_states.jpg" alt="SMART HELMET POSTURE AND TURN DETECTION" width="90%"/>
+  <br/>
+  <sub><b>Figure: Head Posture States & Gyro-Z Turn Direction Detection</b></sub>
+</p>
 
 | State | Category | Detection Condition & Threshold |
 |---|---|---|
@@ -457,7 +465,11 @@ The helmet classifies head orientation and turn direction into the following sta
 
 Gestures are recognized from orientation transitions completed within **1.5 seconds**:
 
-![Gesture Recognition](docs/images/gesture_recognition.jpg)
+<p align="center">
+  <img src="./docs/images/gesture_recognition.jpg" alt="SMART HELMET GESTURE RECOGNITION" width="90%"/>
+  <br/>
+  <sub><b>Figure: Head Gesture Sequence Detection (NOD, REVERSE NOD, HEAD SHAKE)</b></sub>
+</p>
 
 | Gesture | Motion Sequence | Performing Motion |
 |---|---|---|
@@ -471,7 +483,11 @@ Gestures are recognized from orientation transitions completed within **1.5 seco
 
 Rapid-repeat motions (3 occurrences within **3.5 seconds**) trigger app actions without touching the phone:
 
-![Head Commands](docs/images/head_commands.jpg)
+<p align="center">
+  <img src="./docs/images/head_commands.jpg" alt="SMART HELMET HANDS FREE HEAD COMMANDS" width="90%"/>
+  <br/>
+  <sub><b>Figure: Rapid-Repeat Hands-Free Head Commands (START_PPE, START_LOCATION, STOP_ALL)</b></sub>
+</p>
 
 | Command | Motion Pattern | Action Triggered |
 |---|---|---|

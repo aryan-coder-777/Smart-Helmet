@@ -22,7 +22,7 @@
   - [YOLOv8 Model Training](#yolov8-model-training)
   - [PaddleOCR Live Location Scanner](#paddleocr-live-location-scanner)
   - [Emergency SOS System](#emergency-sos-system)
-- [Posture States](#-posture-states)
+- [Posture & Turn Detection](#-posture--turn-detection)
 - [Gesture Recognition](#-gesture-recognition)
 - [Hands-Free Head Commands](#-hands-free-head-commands)
 - [REST API Reference](#-rest-api-reference)
@@ -433,26 +433,23 @@ Model trained on **Kaggle** with NVIDIA Tesla T4 GPU:
 
 ---
 
-## 🧭 Posture States
+## 🧭 Posture & Turn Detection
 
-The helmet classifies head pose into **6 static orientation states**:
+The helmet classifies head orientation and turn direction into the following states:
 
 ![Posture States Diagram](docs/images/posture_states.jpg)
 
 | State | Category | Detection Condition & Threshold |
 |---|---|---|
-| **LEVEL** | Pitch/Roll Pose | Neutral position (pitch ~ 0°, 
-oll ~ 0°) |
-| **LOOKING UP** | Pitch Pose | Head tilted backward (pitch > **+30°**) |
-| **LOOKING DOWN** | Pitch Pose | Head tilted forward (pitch < **−30°**) |
-| **LEFT TILT** | Roll Pose | Head rolling left (
-oll > **+30°**) |
-| **RIGHT TILT** | Roll Pose | Head rolling right (
-oll < **−30°**) |
-| **UPSIDE-DOWN** | Critical Inversion | Helmet inverted (z < 0, gravity reversed) |
-| **LOOKING LEFT** | Yaw Turn | Head turned left (yaw_angle > **+25°**, Gyro-Z) |
-| **LOOKING RIGHT** | Yaw Turn | Head turned right (yaw_angle < **−25°**, Gyro-Z) |
-| **FORWARD** | Yaw Turn | Head facing forward (yaw_angle in [−25°, +25°]) |
+| **LEVEL** | Static Pose | Neutral position (`pitch` ~ 0°, `roll` ~ 0°) |
+| **LOOKING UP** | Pitch Pose | Head tilted backward (`pitch` > **+30°**) |
+| **LOOKING DOWN** | Pitch Pose | Head tilted forward (`pitch` < **−30°**) |
+| **LEFT TILT** | Roll Pose | Head rolling left (`roll` > **+30°**) |
+| **RIGHT TILT** | Roll Pose | Head rolling right (`roll` < **−30°**) |
+| **UPSIDE-DOWN** | Critical Inversion | Helmet inverted (`az` < 0, gravity reversed) |
+| **LOOKING LEFT** | Yaw Turn | Head turned left (`yaw_angle` > **+25°**, Gyro-Z) |
+| **LOOKING RIGHT** | Yaw Turn | Head turned right (`yaw_angle` < **−25°**, Gyro-Z) |
+| **FORWARD** | Yaw Turn | Head facing forward (`yaw_angle` in [−25°, +25°]) |
 
 ---
 
